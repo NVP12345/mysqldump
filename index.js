@@ -49,12 +49,12 @@ var annotateWkbTypes = function(geometry, buffer, offset) {
 		for (var i=0; i<elements; i++) {
 			offset = annotateWkbTypes(geometry[i], buffer, offset);
 		}
-	} 
+	}
 	return offset
 }
 
 var escapeGeometryType = function(val) {
-	
+
 	var constructors = {1: "POINT", 2: "LINESTRING", 3: "POLYGON", 4: "MULTIPOINT", 5: "MULTILINESTRING", 6: "MULTIPOLYGON", 7: "GEOMETRYCOLLECTION" };
 
 	var isPointType = function(val) { return val && typeof val.x === 'number' && typeof val.y === 'number'; }
@@ -88,7 +88,7 @@ var isset = function(){
 	return true;
 }
 
-var buildInsert = function(rows,table,cols){
+var buildInserts = function(rows,table){
 	var cols = _.keys(rows[0]);
 	var sql = [];
 	for(var i in rows){
@@ -102,7 +102,7 @@ var buildInsert = function(rows,table,cols){
 					values.push(" ");
 				}
 			} else if  (rows[i][k]!=='') {
-				
+
 				if (rows[i][k]._wkbType) {
 					var geometry = escapeGeometryType(rows[i][k]);
 					values.push(geometry);
@@ -117,7 +117,7 @@ var buildInsert = function(rows,table,cols){
 		}
 		sql.push("INSERT INTO `"+table+"` (`"+cols.join("`,`")+"`) VALUES ("+values.join()+");");
 	}
-	return sql.join('\n');
+	return sql;
 }
 
 module.exports = function(options,done){
@@ -132,14 +132,13 @@ module.exports = function(options,done){
 	var defaultOptions = {
 		tables:null,
 		schema:true,
-		data:true,
 		ifNotExist:true,
 		autoIncrement:true,
 		dropTable:false,
 		getDump:false,
-		// dest:'./data.sql',
+		dest: null,
 		disableForeignKeyChecks: false,
-		where: null
+		where: {}
 	}
 
 	mysql = mqNode(extend({},defaultConnection,{
@@ -196,41 +195,46 @@ module.exports = function(options,done){
 		}],
 		createDataDump:['createSchemaDump',function(callback,results){
 			var tbls = [];
-			if (options.data) {
+			if (options.where['*']) {
 				tbls = results.getTables; // get data for all tables
-			} else if (options.where) {
-                                tbls = Object.keys(options.where); // get data for tables with a where specified
-                        } else {
-				callback();
-				return;
+			} else {
+				tbls = Object.keys(options.where); // get data for tables with a where specified
 			}
+
+			if (tbls.length === 0) {
+				return callback();
+			}
+
 			var run = [];
+			var queries = [];
 			_.each(tbls,function(table){
 				run.push(function(callback){
 					var opts = {cols:'*', from:"`"+table+"`"};
-					if ((options.where != null) && (typeof options.where[table] != 'undefined')) {
-						opts.where = options.where[table];
-					}
+					opts.where = options.where[table] || options.where['*'];
 					mysql.select(opts,function(err,data){
 						if (err) return callback(err);
-						callback(err,buildInsert(data,table));
+						queries = queries.concat(buildInserts(data,table));
+						callback();
 					}, typeCastOptions);
 				});
 			});
-			async.parallel(run,callback)
+			async.parallel(run,function(err) {
+				callback(err, queries);
+			})
 		}],
 		getDataDump:['createSchemaDump','createDataDump',function(callback,results){
 			if(!results.createSchemaDump || !results.createSchemaDump.length) results.createSchemaDump=[];
 			if(!results.createDataDump || !results.createDataDump.length) results.createDataDump=[];
-			callback(null,results.createSchemaDump.concat(results.createDataDump).join("\n\n"));
+			callback(null,results.createSchemaDump.concat(results.createDataDump));
 		}]
 	},function(err,results){
 		if(err) return done(err);
 
-		mysql.connection.end();
-		if(options.getDump) return done(err, results.getDataDump);
-		if((options.getDump && !options.dest) || options.dest) {
-			fs.writeFile(options.dest || './data.sql', results.getDataDump, done);
+		if(options.dest) {
+			return fs.writeFile(options.dest, results.getDataDump, function writeFileComplete(err) {
+				return done(err, results.getDataDump)
+			});
 		}
+		return done(err, results.getDataDump);
 	});
 }
